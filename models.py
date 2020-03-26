@@ -4,7 +4,6 @@ from sklearn import random_projection
 import torch
 from torch import nn
 from torch.nn import functional as F
-from utils import knn_search
 
 
 # Set up GPU scratch space for FAISS
@@ -28,11 +27,29 @@ def _mean_IDW_kernel(squared_l2_dists, opts):
     return 1 / (squared_l2_dists + opts['delta'])
 
 
+# k-nearest neighbours search
+def _knn_search(queries, data, k, return_neighbours=False, res=None):
+  num_queries, dim = queries.shape
+  if res is None:
+    dists, idxs = np.empty((num_queries, k), dtype=np.float32), np.empty((num_queries, k), dtype=np.int64)
+    heaps = faiss.float_maxheap_array_t()
+    heaps.k, heaps.nh = k, num_queries
+    heaps.val, heaps.ids = faiss.swig_ptr(dists), faiss.swig_ptr(idxs)
+    faiss.knn_L2sqr(faiss.swig_ptr(queries), faiss.swig_ptr(data), dim, num_queries, data.shape[0], heaps)
+  else:
+    dists, idxs = torch.empty(num_queries, k, dtype=torch.float32, device=queries.device), torch.empty(num_queries, k, dtype=torch.int64, device=queries.device)
+    faiss.bruteForceKnn(res, faiss.METRIC_L2, faiss.cast_integer_to_float_ptr(data.storage().data_ptr() + data.storage_offset() * 4), data.is_contiguous(), data.shape[0], faiss.cast_integer_to_float_ptr(queries.storage().data_ptr() + queries.storage_offset() * 4), queries.is_contiguous(), num_queries, dim, k, faiss.cast_integer_to_float_ptr(dists.storage().data_ptr() + dists.storage_offset() * 4), faiss.cast_integer_to_long_ptr(idxs.storage().data_ptr() + idxs.storage_offset() * 8))
+  if return_neighbours:
+    neighbours = data[idxs.reshape(-1)].reshape(-1, k, dim)
+    return dists, idxs, neighbours
+  else:
+    return dists, idxs
+
+
 # Dictionary-based memory (assumes key-value associations do not change)
 class StaticDictionary(nn.Module):
   def __init__(self, args, hash_size, faiss_gpu_resources=None):
     super().__init__()
-    self.exploration = args.exploration
     self.key_size = args.key_size
     self.faiss_gpu_resources = faiss_gpu_resources
     self.num_neighbours = args.num_neighbours
@@ -53,7 +70,7 @@ class StaticDictionary(nn.Module):
   def forward(self, key):
     # Perform kNN search TODO: Do we do hash check here or assume kNN is fine since key-value associations don't change?
     output = torch.zeros(key.size(0), 1, device=key.device)
-    dists, idxs, neighbours = knn_search(key.detach().cpu().numpy() if self.faiss_gpu_resources is None else key.detach(), self.keys, self.num_neighbours, return_neighbours=True, res=self.faiss_gpu_resources)  # Return (squared) L2 distances and indices of nearest neighbours
+    dists, idxs, neighbours = _knn_search(key.detach().cpu().numpy() if self.faiss_gpu_resources is None else key.detach(), self.keys, self.num_neighbours, return_neighbours=True, res=self.faiss_gpu_resources)  # Return (squared) L2 distances and indices of nearest neighbours
     dists, idxs = (dists, idxs) if self.faiss_gpu_resources is None else (dists.cpu().numpy(), idxs.cpu().numpy())
     match_idxs, non_match_idxs = np.nonzero(dists[:, 0] == 0)[0], np.nonzero(dists[:, 0])[0]  # Detect exact matches (based on first returned distance) and non-matches
     output[match_idxs] = torch.from_numpy(self.values[idxs[match_idxs, 0]]).to(device=key.device)  # Use stored return for exact match
@@ -79,7 +96,7 @@ class StaticDictionary(nn.Module):
     keys, values = keys[unique_indices], values[unique_indices]  # Extract corresponding keys and values
 
     # Perform hash check for exact matches
-    dists, idxs = knn_search(hashes, self.hashes, 1)  # TODO: Replace kNN search with real hash check
+    dists, idxs = _knn_search(hashes, self.hashes, 1)  # TODO: Replace kNN search with real hash check
     dists, idxs = dists[:, 0], idxs[:, 0]
     match_idxs, non_match_idxs = np.nonzero(dists == 0)[0], np.nonzero(dists)[0]
     num_matches, num_non_matches = len(match_idxs), len(non_match_idxs)
@@ -129,12 +146,12 @@ class DND(StaticDictionary):
   def forward(self, key, learning=False):
     # Perform kNN search
     if learning:
-      _, idxs, neighbours = knn_search(key.detach().cpu().numpy() if self.faiss_gpu_resources is None else key.detach(), self.keys, self.num_neighbours, return_neighbours=True, res=self.faiss_gpu_resources)  # Retrieve actual neighbours
+      _, idxs, neighbours = _knn_search(key.detach().cpu().numpy() if self.faiss_gpu_resources is None else key.detach(), self.keys, self.num_neighbours, return_neighbours=True, res=self.faiss_gpu_resources)  # Retrieve actual neighbours
       neighbours = torch.tensor(neighbours, requires_grad=True).to(device=key.device) if self.faiss_gpu_resources is None else neighbours.requires_grad_(True)
       dists = (key.unsqueeze(dim=1) - neighbours).pow(2).sum(dim=2)  # Recalculate (squared) L2 distance for differentiation
       # TODO: Check if exact match causes gradient problems
     else:
-      dists, idxs = knn_search(key.detach().cpu().numpy() if self.faiss_gpu_resources is None else key.detach(), self.keys, self.num_neighbours, res=self.faiss_gpu_resources)
+      dists, idxs = _knn_search(key.detach().cpu().numpy() if self.faiss_gpu_resources is None else key.detach(), self.keys, self.num_neighbours, res=self.faiss_gpu_resources)
       dists = torch.tensor(dists).to(device=key.device) if self.faiss_gpu_resources is None else dists
     idxs = idxs if self.faiss_gpu_resources is None else idxs.cpu()
 
@@ -162,7 +179,7 @@ class DND(StaticDictionary):
     keys, values = keys[unique_indices], values[unique_indices]  # Extract corresponding keys and values
 
     # Perform hash check for exact matches
-    dists, idxs = knn_search(hashes, self.hashes, 1)  # TODO: Replace kNN search with real hash check
+    dists, idxs = _knn_search(hashes, self.hashes, 1)  # TODO: Replace kNN search with real hash check
     dists, idxs = dists[:, 0], idxs[:, 0]
     match_idxs, non_match_idxs = np.nonzero(dists == 0)[0], np.nonzero(dists)[0]
     num_matches, num_non_matches = len(match_idxs), len(non_match_idxs)
@@ -229,22 +246,3 @@ class NEC(nn.Module):
       return torch.cat(memory_output, dim=1), neighbours, values, idxs, keys  # Return Q-values, neighbours, values and keys
     else:
       return torch.cat(memory_output, dim=1), keys  # Return Q-values and keys
-
-
-class DQN(nn.Module):
-  def __init__(self, args, observation_shape, action_space):
-    super().__init__()
-    self.hidden_size, self.n_actions = args.hidden_size, action_space
-    self.conv1 = nn.Conv2d(args.history_length, 32, 8, stride=4, padding=1)
-    self.conv2 = nn.Conv2d(32, 64, 4, stride=2)
-    self.conv3 = nn.Conv2d(64, 64, 3)
-    self.fc1 = nn.Linear(3136, args.hidden_size)
-    self.fc_q = nn.Linear(args.hidden_size, action_space)
-
-  def forward(self, observation):
-    hidden = F.relu(self.conv1(observation))
-    hidden = F.relu(self.conv2(hidden))
-    hidden = F.relu(self.conv3(hidden))
-    hidden = F.relu(self.fc1(hidden.view(-1, 3136)))
-    q_values = self.fc_q(hidden)
-    return q_values  # Return Q-values
