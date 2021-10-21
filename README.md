@@ -30,11 +30,11 @@ Used in [Memory-efficient episodic control reinforcement learning with dynamic o
 
 Notes about this codebase based on conversations with Robert Kirk
 
-- This uses brute-force kNN search, as opposed to the approximate kNN search used in the original works
-- This uses separate hash functions, as in the [original works](https://github.com/EndingCredits/Neural-Episodic-Control/issues/4)
-- The keys and values in the NEC table are not updated - this is a bug!
-- Key/value gradients are taken from the first instance of each updated key, but averaging would make more sense
-- Despite the bug, this can still reproduce the results from the NEC paper (hence those updates may not be important)
+- This uses brute-force kNN search, as opposed to the approximate kNN search used in the original works. Without knowing the full details of DeepMind's k-d tree, especially how they might update the tree with new data, I chose to stick to the exact version to be safe.
+- As in the [original works](https://github.com/EndingCredits/Neural-Episodic-Control/issues/4), this uses a hash of the state in order to detect exact state matches.
+- Key/value gradients for the DND are taken from the first instance of each updated key, but averaging would make more sense.
+- The gradients for the keys and values in the DND do not get applied properly (effectively, the gradients are zero) - this is a bug! Despite the bug, this codebase can still reproduce the results from the NEC paper (hence those updates may not be important).
+
 
 ## Acknowledgements
 
