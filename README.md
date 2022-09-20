@@ -24,7 +24,7 @@ python main.py --algorithm NEC \
                --learn-start 50000
 ```
 
-Used in [Memory-efficient episodic control reinforcement learning with dynamic online k-means](https://arxiv.org/abs/1911.09560) and [Sample-Efficient Reinforcement Learning with Maximum Entropy Mellowmax Episodic Control](https://arxiv.org/abs/1911.09615), both presented at the [Workshop on Biological and Artificial Reinforcement Learning, NeurIPS 2019](https://sites.google.com/view/biologicalandartificialrl/home).
+Used in [Memory-efficient episodic control reinforcement learning with dynamic online k-means](https://arxiv.org/abs/1911.09560) and [Sample-Efficient Reinforcement Learning with Maximum Entropy Mellowmax Episodic Control](https://arxiv.org/abs/1911.09615), both presented at the [Workshop on Biological and Artificial Reinforcement Learning, NeurIPS 2019](https://sites.google.com/view/biologicalandartificialrl/home). The source code for these papers can be found in this repo [here](https://github.com/Kaixhin/EC/blob/master/BioArtRLCode.zip), but is not as organised as this codebase.
 
 ## Notes
 
